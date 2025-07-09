@@ -3,9 +3,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { searchLibraries, fetchLibraryDocumentation } from "./lib/api.js";
+import { searchLibraries, fetchLibraryDocumentation, searchCloudProviderDocs } from "./lib/api.js";
 import { formatSearchResults } from "./lib/utils.js";
-import { SearchResponse } from "./lib/types.js";
+import { SearchResponse, CloudProvider, TroubleshootingCategory } from "./lib/types.js";
 import { createServer } from "http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -172,6 +172,130 @@ ${resultsText}`,
           {
             type: "text",
             text: fetchDocsResponse,
+          },
+        ],
+      };
+    }
+  );
+
+  // Register Cloud Provider Documentation tool
+  server.tool(
+    "get-cloud-provider-docs",
+    `Searches and retrieves cloud provider documentation for troubleshooting connector issues.
+    
+This tool is designed to help diagnose and troubleshoot connectivity issues between SaaS applications and cloud environments by providing up-to-date documentation from cloud providers.
+
+Usage Scenarios:
+- Diagnosing IAM permission issues with AWS services
+- Understanding S3 bucket policy configurations
+- Troubleshooting API Gateway authentication problems
+- Resolving Lambda execution role issues
+- Finding solutions for access denied errors
+
+Search Strategy:
+1. Specify the cloud provider (currently supports AWS)
+2. Optionally narrow down to specific services (iam, s3, lambda, etc.)
+3. Use keywords that describe your issue (access denied, permissions, configuration)
+4. Filter by troubleshooting categories for focused results
+
+The tool searches official cloud provider documentation and returns structured content including troubleshooting steps, code examples, and related links.`,
+    {
+      query: z
+        .string()
+        .describe(
+          "Search query describing the issue or topic (e.g., 'S3 access denied error', 'IAM role permissions')"
+        ),
+      provider: z.nativeEnum(CloudProvider).describe("Cloud provider to search (aws, azure, gcp)"),
+      service: z
+        .string()
+        .optional()
+        .describe("Specific cloud service to focus on (e.g., 'iam', 's3', 'lambda', 'apigateway')"),
+      category: z
+        .nativeEnum(TroubleshootingCategory)
+        .optional()
+        .describe(
+          "Troubleshooting category to filter results (access-denied, permissions, authentication, etc.)"
+        ),
+      maxResults: z
+        .number()
+        .optional()
+        .default(5)
+        .describe("Maximum number of results to return (default: 5)"),
+    },
+    async ({ query, provider, service, category, maxResults }) => {
+      const searchRequest = {
+        query,
+        provider,
+        service,
+        category,
+        maxResults,
+      };
+
+      const searchResponse = await searchCloudProviderDocs(searchRequest);
+
+      if (searchResponse.error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error searching cloud provider documentation: ${searchResponse.error}`,
+            },
+          ],
+        };
+      }
+
+      if (searchResponse.results.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No documentation found for query "${query}" on ${provider.toUpperCase()}.
+              
+Suggestions:
+- Try broader search terms
+- Check if the service name is correct
+- Consider searching without category filters
+- Verify the cloud provider is supported`,
+            },
+          ],
+        };
+      }
+
+      // Format results for display
+      const formattedResults = searchResponse.results
+        .map((result, index) => {
+          const sectionsText =
+            result.content.sections.length > 0
+              ? `\n\nKey Sections:\n${result.content.sections.map((s) => `- ${s.heading}`).join("\n")}`
+              : "";
+
+          return `## Result ${index + 1}: ${result.title}
+
+**Service:** ${result.service.toUpperCase()}
+**Category:** ${result.category}
+**URL:** ${result.url}
+**Description:** ${result.description}
+
+**Keywords:** ${result.keywords.join(", ")}${sectionsText}
+
+---`;
+        })
+        .join("\n\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${searchResponse.totalResults} documentation page(s) for "${query}" on ${provider.toUpperCase()}
+Search completed in ${searchResponse.searchTime}ms
+
+${formattedResults}
+
+**Usage Tips:**
+- Visit the URLs for complete troubleshooting guides
+- Look for sections related to your specific error messages
+- Check for code examples and configuration samples
+- Review related links for additional context`,
           },
         ],
       };
